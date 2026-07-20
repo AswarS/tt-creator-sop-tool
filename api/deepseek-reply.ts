@@ -1,10 +1,13 @@
 import OpenAI from "openai";
 import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
 
-const DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-pro";
-const DEEPSEEK_BASE_URL = "https://api.deepseek.com";
-const MISSING_DEEPSEEK_API_KEY_ERROR =
-  "未配置 DEEPSEEK_API_KEY，无法调用 DeepSeek。";
+// AI_BASE_URL / AI_MODEL / AI_API_KEY let you point this at your own
+// OpenAI-compatible model service instead of DeepSeek. If these env vars
+// are not set, it falls back to DeepSeek's defaults.
+const DEFAULT_AI_MODEL = process.env.AI_MODEL || "deepseek-v4-pro";
+const AI_BASE_URL = process.env.AI_BASE_URL || "https://api.deepseek.com";
+const MISSING_API_KEY_ERROR =
+  "未配置 AI_API_KEY，无法调用模型服务。";
 
 export type DeepSeekAction =
   | "translate_creator_reply"
@@ -254,26 +257,32 @@ async function requestDeepSeek(
   action: DeepSeekAction,
   input: DeepSeekReplyRequest,
 ): Promise<DeepSeekReplyResponse> {
-  const apiKey = process.env.DEEPSEEK_API_KEY;
-  if (!apiKey) throw new Error(MISSING_DEEPSEEK_API_KEY_ERROR);
+  const apiKey = process.env.AI_API_KEY;
+  if (!apiKey) throw new Error(MISSING_API_KEY_ERROR);
 
   const client = new OpenAI({
-    baseURL: DEEPSEEK_BASE_URL,
+    baseURL: AI_BASE_URL,
     apiKey,
   });
 
+  // The "thinking" field is a DeepSeek-specific extension used to disable
+  // its reasoning mode. Only send it when actually targeting DeepSeek, so
+  // third-party OpenAI-compatible services that reject unknown fields don't
+  // fail the request.
+  const isDeepSeek = AI_BASE_URL.includes("deepseek.com");
+
   const completion = await client.chat.completions.create({
-    model: process.env.DEEPSEEK_MODEL || DEFAULT_DEEPSEEK_MODEL,
+    model: process.env.AI_MODEL || DEFAULT_AI_MODEL,
     temperature: action === "translate_creator_reply" ? 0.2 : 0.4,
     response_format: { type: "json_object" },
     messages:
       action === "translate_creator_reply"
         ? buildTranslateMessages(input)
         : buildGenerateMessages(input),
-    extra_body: { thinking: { type: "disabled" } },
+    ...(isDeepSeek ? { extra_body: { thinking: { type: "disabled" } } } : {}),
   } as Parameters<typeof client.chat.completions.create>[0] & {
     stream?: false;
-    extra_body: { thinking: { type: string } };
+    extra_body?: { thinking: { type: string } };
   });
 
   const content = (
@@ -309,7 +318,7 @@ export default async function handler(
       error instanceof Error
         ? error.message
         : "DeepSeek 调用失败，请检查 API Key 或稍后重试。";
-    const statusCode = message === MISSING_DEEPSEEK_API_KEY_ERROR ? 500 : 502;
+    const statusCode = message === MISSING_API_KEY_ERROR ? 500 : 502;
     return res.status(statusCode).json({ error: message });
   }
 }
